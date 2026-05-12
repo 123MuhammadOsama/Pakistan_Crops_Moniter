@@ -5,6 +5,7 @@ import Map, { NavigationControl } from "react-map-gl/mapbox";
 import mapboxgl from "mapbox-gl";
 import * as turf from "@turf/turf";
 import { getDb, type FarmRecord } from "../lib/db";
+import { useNDVI } from "../hooks/useNDVI";
 
 import "mapbox-gl/dist/mapbox-gl.css";
 
@@ -97,6 +98,8 @@ export default function MapView() {
   const [message, setMessage] = useState(
     'Click "Start drawing" to mark your boundary.'
   );
+
+  const { fetchPreview, fetchTimeseries, loading: ndviLoading } = useNDVI();
 
   const toSavedFarm = (farm: FarmRecord): SavedFarm | null => {
     const coords = normalizeCoords(farm);
@@ -327,6 +330,76 @@ export default function MapView() {
   }, [mapReady, savedFarms]);
 
   useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current?.getMap();
+    if (!map) return;
+
+    const handleClick = async (e: any) => {
+      try {
+        const feature = e.features && e.features[0];
+        if (!feature) return;
+
+        const id = Number(feature.properties?.id ?? feature.id);
+        const saved = savedFarms.find((s) => s.id === id);
+        const geometry = saved
+          ? {
+              type: "Polygon",
+              coordinates: [
+                [...saved.coords.map((c) => [c.lng, c.lat] as [number, number]), [saved.coords[0].lng, saved.coords[0].lat]],
+              ],
+            }
+          : feature.geometry;
+
+        setMessage("Loading farm monitor images...");
+        const preview = await fetchPreview(geometry, { daysBack: 30 });
+        if (!preview || preview.error) {
+          setMessage("Failed to load preview");
+          return;
+        }
+
+        const { trueColor, ndvi, coords } = preview;
+        const validCoords =
+          Array.isArray(coords) &&
+          coords.length === 4 &&
+          coords.every((pair: any) =>
+            Array.isArray(pair) && pair.length === 2 &&
+            Number.isFinite(pair[0]) && Number.isFinite(pair[1])
+          );
+        if (!validCoords) {
+          setMessage("Invalid preview coordinates");
+          return;
+        }
+
+        try {
+          if (map.getLayer("farm-preview-layer")) map.removeLayer("farm-preview-layer");
+          if (map.getSource("farm-preview")) map.removeSource("farm-preview");
+        } catch (err) {}
+
+        map.addSource("farm-preview", { type: "image", url: trueColor, coordinates: coords });
+        map.addLayer({ id: "farm-preview-layer", type: "raster", source: "farm-preview" });
+
+        try {
+          if (map.getLayer("farm-ndvi-layer")) map.removeLayer("farm-ndvi-layer");
+          if (map.getSource("farm-ndvi")) map.removeSource("farm-ndvi");
+        } catch (err) {}
+
+        map.addSource("farm-ndvi", { type: "image", url: ndvi, coordinates: coords });
+        map.addLayer({ id: "farm-ndvi-layer", type: "raster", source: "farm-ndvi", paint: { "raster-opacity": 0.6 } });
+
+        setMessage(`Showing monitor for ${saved?.name ?? "farm"}`);
+      } catch (err) {
+        console.error(err);
+        setMessage("Error loading farm monitor");
+      }
+    };
+
+    map.on("click", SAVED_FILL_LAYER, handleClick);
+    return () => {
+      map.off("click", SAVED_FILL_LAYER, handleClick);
+    };
+  }, [mapReady, savedFarms, fetchPreview]);
+
+  useEffect(() => {
     console.log("mapReady state changed to:", mapReady);
   }, [mapReady]);
 
@@ -448,12 +521,14 @@ export default function MapView() {
       ];
 
       return {
+        id: farm.id,
         type: "Feature" as const,
         geometry: {
           type: "Polygon" as const,
           coordinates: [polygon],
         },
         properties: {
+          id: farm.id,
           name: farm.name,
           area: farm.area,
           centerLat: farm.centerLat,
@@ -654,12 +729,6 @@ export default function MapView() {
             {drawing ? "Drawing Active" : "Start Drawing"}
           </button>
 
-          <button
-            onClick={saveBoundary}
-            className="rounded-lg bg-green-600 p-2 text-white"
-          >
-            Save Boundary
-          </button>
 
           <button
             onClick={resetBoundary}
@@ -689,6 +758,13 @@ export default function MapView() {
           )}
         </div>
 
+          <button
+            onClick={saveBoundary}
+            className="rounded-lg bg-green-600 p-2 text-white mt-2"
+          >
+            Save Boundary
+          </button>
+
         <div className="mt-4">
           <label className="mb-1 block text-sm font-medium">
             Search Saved Land
@@ -705,7 +781,7 @@ export default function MapView() {
               className="flex-1 rounded-lg border p-2"
             />
             <button
-              onClick={searchFarms}
+              onClick={() => searchFarms()}
               className="rounded-lg bg-black px-3 text-sm text-white"
             >
               Search
@@ -715,6 +791,18 @@ export default function MapView() {
 
         <div className="mt-4 rounded-lg bg-gray-100 p-3 text-sm">
           {message}
+        </div>
+
+        <div className="mt-4 rounded-lg border p-3 text-xs">
+          <div className="font-semibold">Vegetation Legend (NDVI)</div>
+          <div className="mt-2 grid gap-1">
+            <div><span className="inline-block h-2 w-6 rounded bg-[#333333]" /> <span className="ml-2">Water / non-veg</span></div>
+            <div><span className="inline-block h-2 w-6 rounded bg-[#8a4d33]" /> <span className="ml-2">Bare soil</span></div>
+            <div><span className="inline-block h-2 w-6 rounded bg-[#bfa84d]" /> <span className="ml-2">Sparse vegetation</span></div>
+            <div><span className="inline-block h-2 w-6 rounded bg-[#a8b200]" /> <span className="ml-2">Moderate vegetation</span></div>
+            <div><span className="inline-block h-2 w-6 rounded bg-[#1f8f1f]" /> <span className="ml-2">Healthy vegetation</span></div>
+            <div><span className="inline-block h-2 w-6 rounded bg-[#0c6b0c]" /> <span className="ml-2">Very healthy vegetation</span></div>
+          </div>
         </div>
 
         <div className="mt-4 max-h-60 overflow-y-auto">
