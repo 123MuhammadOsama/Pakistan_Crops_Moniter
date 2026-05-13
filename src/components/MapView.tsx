@@ -6,6 +6,7 @@ import mapboxgl from "mapbox-gl";
 import * as turf from "@turf/turf";
 import { getDb, type FarmRecord } from "../lib/db";
 import { useNDVI } from "../hooks/useNDVI";
+import NDVIReport from "./NDVIReport";
 
 import "mapbox-gl/dist/mapbox-gl.css";
 
@@ -98,6 +99,11 @@ export default function MapView() {
   const [message, setMessage] = useState(
     'Click "Start drawing" to mark your boundary.'
   );
+
+  const [ndviData, setNdviData] = useState<any>(null);
+  const [selectedFarmForReport, setSelectedFarmForReport] = useState<SavedFarm | null>(null);
+  const [showReport, setShowReport] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const { fetchPreview, fetchTimeseries, loading: ndviLoading } = useNDVI();
 
@@ -626,6 +632,45 @@ export default function MapView() {
     clearMarkers();
   };
 
+  const fetchNDVIReport = async (farm: SavedFarm) => {
+    setSelectedFarmForReport(farm);
+    setShowReport(true);
+    setReportError(null);
+    
+    try {
+      setMessage("Loading NDVI data for report...");
+      const geometry = {
+        type: "Polygon" as const,
+        coordinates: [
+          [
+            ...farm.coords.map((c) => [c.lng, c.lat]),
+            [farm.coords[0].lng, farm.coords[0].lat],
+          ],
+        ],
+      };
+
+      // Fetch NDVI statistics
+      const statsRes = await fetch("/api/sentinel/ndvi-stats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ geometry, daysBack: 30 }),
+      });
+
+      if (!statsRes.ok) {
+        const err = await statsRes.json();
+        throw new Error(err?.error || "Failed to fetch NDVI stats");
+      }
+
+      const statsData = await statsRes.json();
+      setNdviData(statsData);
+      setMessage(`NDVI report generated for ${farm.name}`);
+    } catch (err: any) {
+      const errorMsg = err?.message || "Failed to generate NDVI report";
+      setReportError(errorMsg);
+      setMessage(errorMsg);
+    }
+  };
+
   const searchFarms = (value?: string) => {
     const raw = typeof value === "string" ? value : searchTerm;
     const term = raw.trim().toLowerCase();
@@ -796,7 +841,7 @@ export default function MapView() {
         <div className="mt-4 rounded-lg border p-3 text-xs">
           <div className="font-semibold">Vegetation Legend (NDVI)</div>
           <div className="mt-2 grid gap-1">
-            <div><span className="inline-block h-2 w-6 rounded bg-[#333333]" /> <span className="ml-2">Water / non-veg</span></div>
+            {/* <div><span className="inline-block h-2 w-6 rounded bg-[#333333]" /> <span className="ml-2">Water / non-veg</span></div> */}
             <div><span className="inline-block h-2 w-6 rounded bg-[#8a4d33]" /> <span className="ml-2">Bare soil</span></div>
             <div><span className="inline-block h-2 w-6 rounded bg-[#bfa84d]" /> <span className="ml-2">Sparse vegetation</span></div>
             <div><span className="inline-block h-2 w-6 rounded bg-[#a8b200]" /> <span className="ml-2">Moderate vegetation</span></div>
@@ -815,35 +860,65 @@ export default function MapView() {
           ) : (
             <div className="mt-2 flex flex-col gap-2">
               {searchResults.map((farm) => (
-                <button
-                  key={farm.id}
-                  onClick={() => {
-                    if (!mapRef.current) return;
-                    const map = mapRef.current.getMap();
-                    const coords = farm.coords.map(
-                      (coord) => [coord.lng, coord.lat] as [number, number]
-                    );
-                    const bounds = coords.reduce(
-                      (b, point) => b.extend(point),
-                      new mapboxgl.LngLatBounds(coords[0], coords[0])
-                    );
-                    map.fitBounds(bounds, { padding: 80, maxZoom: 16 });
-                  }}
-                  className="rounded-lg border p-2 text-left"
-                >
-                  <div className="font-semibold">{farm.name}</div>
-                  <div className="text-xs text-gray-500">
-                    {farm.coords.length} points
-                  </div>
-                  <div className="text-xs text-blue-600">
-                    {formatAreaSqm(farm.area)}
-                  </div>
-                </button>
+                <div key={farm.id} className="rounded-lg border p-2">
+                  <button
+                    onClick={() => {
+                      if (!mapRef.current) return;
+                      const map = mapRef.current.getMap();
+                      const coords = farm.coords.map(
+                        (coord) => [coord.lng, coord.lat] as [number, number]
+                      );
+                      const bounds = coords.reduce(
+                        (b, point) => b.extend(point),
+                        new mapboxgl.LngLatBounds(coords[0], coords[0])
+                      );
+                      map.fitBounds(bounds, { padding: 80, maxZoom: 16 });
+                    }}
+                    className="w-full text-left hover:bg-gray-50 p-1 rounded"
+                  >
+                    <div className="font-semibold">{farm.name}</div>
+                    <div className="text-xs text-gray-500">
+                      {farm.coords.length} points
+                    </div>
+                    <div className="text-xs text-blue-600">
+                      {formatAreaSqm(farm.area)}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => fetchNDVIReport(farm)}
+                    className="mt-2 w-full rounded bg-emerald-500 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-600"
+                  >
+                    📊 NDVI Report
+                  </button>
+                </div>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {showReport && selectedFarmForReport && (
+        <div className="absolute bottom-4 right-4 z-20 max-h-[calc(100vh-120px)] max-w-2xl overflow-y-auto rounded-2xl shadow-2xl">
+          <div className="flex items-center justify-between bg-white rounded-t-2xl p-4 border-b">
+            <h3 className="text-lg font-bold">NDVI Report - {selectedFarmForReport.name}</h3>
+            <button
+              onClick={() => setShowReport(false)}
+              className="rounded-full bg-red-500 px-3 py-1 text-sm font-semibold text-white hover:bg-red-600"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="bg-white rounded-b-2xl p-4">
+            <NDVIReport
+              stats={ndviData?.stats}
+              farmName={selectedFarmForReport.name}
+              area={selectedFarmForReport.area}
+              error={reportError}
+              loading={ndviLoading}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
