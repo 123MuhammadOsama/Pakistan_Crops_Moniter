@@ -91,10 +91,14 @@ export default function MapView() {
 
   const [farmName, setFarmName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [searchLat, setSearchLat] = useState("");
+  const [searchLng, setSearchLng] = useState("");
 
   const [savedFarms, setSavedFarms] = useState<SavedFarm[]>([]);
   const [searchResults, setSearchResults] = useState<SavedFarm[]>([]);
   const [mapReady, setMapReady] = useState(false);
+  
+  const searchLatLngMarkerRef = useRef<mapboxgl.Marker | null>(null);
 
   const [message, setMessage] = useState(
     'Click "Start drawing" to mark your boundary.'
@@ -695,6 +699,67 @@ export default function MapView() {
     }
   };
 
+  const searchByLatLng = () => {
+    const lat = parseFloat(searchLat);
+    const lng = parseFloat(searchLng);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      setMessage("Please enter valid latitude and longitude values.");
+      return;
+    }
+
+    if (lat < -90 || lat > 90) {
+      setMessage("Latitude must be between -90 and 90.");
+      return;
+    }
+
+    if (lng < -180 || lng > 180) {
+      setMessage("Longitude must be between -180 and 180.");
+      return;
+    }
+
+    if (!mapRef.current) return;
+
+    const map = mapRef.current.getMap();
+
+    // Remove previous search marker
+    if (searchLatLngMarkerRef.current) {
+      searchLatLngMarkerRef.current.remove();
+    }
+
+    // Add marker at the searched location
+    const el = document.createElement("div");
+    el.textContent = "📍";
+    el.style.fontSize = "32px";
+    el.style.cursor = "pointer";
+    el.style.filter = "drop-shadow(0 2px 4px rgba(0,0,0,0.3))";
+
+    const marker = new mapboxgl.Marker({ element: el })
+      .setLngLat([lng, lat])
+      .setPopup(
+        new mapboxgl.Popup({ offset: 25 }).setHTML(
+          `<div style="padding:8px;">
+            <strong>Search Location</strong><br/>
+            Lat: ${lat.toFixed(6)}<br/>
+            Lng: ${lng.toFixed(6)}
+          </div>`
+        )
+      )
+      .addTo(map);
+
+    marker.togglePopup();
+    searchLatLngMarkerRef.current = marker;
+
+    // Center map on the location
+    map.flyTo({
+      center: [lng, lat],
+      zoom: 16,
+      duration: 1500,
+    });
+
+    setMessage(`Pinned location: Lat ${lat.toFixed(6)}, Lng ${lng.toFixed(6)}`);
+  };
+
   const takeScreenshot = () => {
     if (!mapRef.current) return;
     const map = mapRef.current.getMap();
@@ -832,6 +897,36 @@ export default function MapView() {
               Search
             </button>
           </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="mb-1 block text-sm font-medium">
+            Pin Location by Coordinates
+          </label>
+          <div className="flex flex-col gap-2">
+            <input
+              value={searchLat}
+              onChange={(e) => setSearchLat(e.target.value)}
+              placeholder="Latitude"
+              type="number"
+              step="0.000001"
+              className="flex-1 rounded-lg border p-2 text-sm"
+            />
+            <input
+              value={searchLng}
+              onChange={(e) => setSearchLng(e.target.value)}
+              placeholder="Longitude"
+              type="number"
+              step="0.000001"
+              className="flex-1 rounded-lg border p-2 text-sm"
+            />
+          </div>
+          <button
+            onClick={searchByLatLng}
+            className="mt-2 w-full rounded-lg bg-blue-600 p-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            📍 Pin Location
+          </button>
         </div>
 
         <div className="mt-4 rounded-lg bg-gray-100 p-3 text-sm">
